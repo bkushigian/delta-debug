@@ -10,10 +10,11 @@
 fn ddmin2<'a, T>(
     bad_config: &[&'a T],
     granularity: usize,
-    mut oracle: impl FnMut (&[&'a T]) -> bool
+    mut oracle: impl FnMut(&[&'a T]) -> bool,
 ) -> Vec<&'a T>
-where T: std::fmt::Debug {
-
+where
+    T: std::fmt::Debug,
+{
     if granularity > bad_config.len() {
         panic!("Violation if recursion invariant: configs length less than split size")
     }
@@ -36,7 +37,7 @@ where T: std::fmt::Debug {
         deltas.remove(i);
         let nabla = deltas.concat();
         if !oracle(&nabla) {
-            return ddmin2(&nabla, 2.max(granularity-1), oracle);
+            return ddmin2(&nabla, 2.max(granularity - 1), oracle);
         }
     }
 
@@ -46,11 +47,10 @@ where T: std::fmt::Debug {
     bad_config.to_vec()
 }
 
-pub fn dd<'a, T>(
-    bad_config: &[&'a T],
-    oracle: impl FnMut (&[&'a T]) -> bool
-) -> Vec<&'a T>
-where T: std::fmt::Debug {
+pub fn dd<'a, T>(bad_config: &[&'a T], oracle: impl FnMut(&[&'a T]) -> bool) -> Vec<&'a T>
+where
+    T: std::fmt::Debug,
+{
     ddmin2(bad_config, 2, oracle)
 }
 
@@ -63,20 +63,19 @@ mod tests {
         // doesn't contain 0
         let oracle = |xs: &[&i32]| !xs.contains(&&0);
 
-        let config: Vec<i32>  = vec![0, 1, 2, 3, 4];
+        let config: Vec<i32> = vec![0, 1, 2, 3, 4];
         let config: Vec<&i32> = config.iter().collect();
 
         let min = dd(config.as_slice(), oracle);
         assert!(min.len() == 1);
         assert!(min.contains(&&0));
 
-        let config: Vec<i32>  = vec![0, 0, 0, 0, 0];
+        let config: Vec<i32> = vec![0, 0, 0, 0, 0];
         let config: Vec<&i32> = config.iter().collect();
 
         let min = dd(config.as_slice(), oracle);
         assert!(min.len() == 1);
         assert!(min.contains(&&0));
-
     }
 
     #[test]
@@ -84,7 +83,7 @@ mod tests {
         // all even
         let oracle = |xs: &[&i32]| xs.iter().all(|x| **x % 2 == 0);
 
-        let config: Vec<i32>  = vec![0, 1, 2, 4, 6, 8, 10, 12, 1, 1, 1];
+        let config: Vec<i32> = vec![0, 1, 2, 4, 6, 8, 10, 12, 1, 1, 1];
         let config: Vec<&i32> = config.iter().collect();
 
         let min = dd(config.as_slice(), oracle);
@@ -96,7 +95,7 @@ mod tests {
     fn test3() {
         let oracle = |xs: &[&i32]| !(xs.contains(&&0) && xs.contains(&&1));
 
-        let config: Vec<i32>  = vec![0, 1, 2, 4, 6, 8, 10, 12];
+        let config: Vec<i32> = vec![0, 1, 2, 4, 6, 8, 10, 12];
         let config: Vec<&i32> = config.iter().collect();
 
         let min = dd(config.as_slice(), oracle);
@@ -115,7 +114,7 @@ mod tests {
             sum == 0
         };
 
-        let config: Vec<i32>  = vec![-1, -2, 3];
+        let config: Vec<i32> = vec![-1, -2, 3];
         let config: Vec<&i32> = config.iter().collect();
 
         let min = dd(config.as_slice(), oracle);
