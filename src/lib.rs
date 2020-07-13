@@ -1,57 +1,107 @@
-#![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unused_variables)]
+#![warn(missing_docs)]
+/*!
 
-/// ddmin2
-/// Takes a bad configuration, a granularity, and an oracle that identifies good
-/// configurations (i.e., returns `true` when the configuration is good, and
-/// `false` when the configuration is bad). Returns a 1-minimal configuration
-/// that fails the oracle.
-fn ddmin2<'a, T>(
-    bad_config: &[&'a T],
-    granularity: usize,
-    mut oracle: impl FnMut(&[&'a T]) -> bool,
-) -> Vec<&'a T>
+A small library for minimizing or maximizing sets, useful for delta-debugging.
+
+Really it's minimizing/maximizing sequences, as the oracles may rely on
+candidates being a subsequence (same order) of the initial set.
+
+# Examples
+```
+let set = vec![0, 1, 2, 3, 0, 1, 2, 3];
+let has_one_and_three = |s: &[i32]| s.contains(&1) && s.contains(&3);
+let minimal = delta_debug::minimize(set, has_one_and_three);
+assert_eq!(minimal, vec![1, 3]);
+
+let set = vec![0, 1, 2, 3, 0, 1, 2, 3];
+let all_even = |s: &[i32]| s.iter().all(|i| *i % 2 == 0);
+let maximal = delta_debug::maximize(set, all_even);
+assert_eq!(maximal, vec![0, 2, 0, 2]);
+
+
+// For non-Clone type, references work just fine
+struct Foo(i32);
+let set: Vec<Foo> = vec![0, 1, 2, 3, 0, 1, 2, 3].into_iter().map(Foo).collect();
+let refs: Vec<&Foo> = set.iter().collect();
+let all_even = |s: &[&Foo]| s.iter().all(|foo| foo.0 % 2 == 0);
+let maximal = delta_debug::maximize(refs, all_even);
+let ints: Vec<i32> = maximal.iter().map(|foo| foo.0).collect();
+assert_eq!(ints, vec![0, 2, 0, 2]);
+```
+
+*/
+
+/// Minimize a set given an oracle.
+///
+/// It consumes the given set because it uses that allocation.
+pub fn minimize<T, F>(mut set: Vec<T>, mut oracle: F) -> Vec<T>
 where
-    T: std::fmt::Debug,
+    T: Clone,
+    F: FnMut(&[T]) -> bool,
 {
-    if granularity > bad_config.len() {
-        panic!("Violation if recursion invariant: configs length less than split size")
-    }
+    let mut times_shrunk = 0;
+    let mut candidate = Vec::with_capacity(set.len());
 
-    let batch_size = bad_config.len() / granularity;
-    let deltas: Vec<_> = bad_config.chunks(batch_size).collect();
-    let granularity = deltas.len();
+    'outer: loop {
+        for chunk_len in (0..).map(|i| set.len() / (2 << i)).take_while(|n| *n > 0) {
+            debug_assert!(0 < chunk_len);
+            debug_assert!(chunk_len <= set.len() / 2);
 
-    for delta in &deltas {
-        if !oracle(delta) {
-            if delta.len() == 1 {
-                return delta.to_vec();
+            let mut missing = 0;
+            while missing + chunk_len <= set.len() {
+                candidate.clear();
+                candidate.extend(set[..missing].iter().cloned());
+                candidate.extend(set[missing + chunk_len..].iter().cloned());
+                missing += chunk_len;
+
+                if oracle(&candidate) {
+                    std::mem::swap(&mut set, &mut candidate);
+                    times_shrunk += 1;
+                    continue 'outer;
+                }
             }
-            return ddmin2(delta, 2, oracle);
         }
-    }
 
-    for i in 0..granularity {
-        let mut deltas = deltas.clone();
-        deltas.remove(i);
-        let nabla = deltas.concat();
-        if !oracle(&nabla) {
-            return ddmin2(&nabla, 2.max(granularity - 1), oracle);
+        // if we got this far, see if we can go all the way to empty
+        if set.len() == 1 && oracle(&[]) {
+            return Vec::new();
         }
-    }
 
-    if granularity < bad_config.len() {
-        return ddmin2(bad_config, (2 * granularity).min(bad_config.len()), oracle);
+        if times_shrunk == 0 && !oracle(&set) {
+            panic!("Failed to shrink, and even the input set failed the oracle!")
+        }
+
+        debug_assert!(oracle(&set));
+        return set;
     }
-    bad_config.to_vec()
 }
 
-pub fn dd<'a, T>(bad_config: &[&'a T], oracle: impl FnMut(&[&'a T]) -> bool) -> Vec<&'a T>
+/// Maximize a set given an oracle.
+///
+/// It consumes the given set because it uses that allocation.
+pub fn maximize<T, F>(set: Vec<T>, mut oracle: F) -> Vec<T>
 where
-    T: std::fmt::Debug,
+    T: Clone,
+    F: FnMut(&[T]) -> bool,
 {
-    ddmin2(bad_config, 2, oracle)
+    let build_set = |to_remove: &[usize]| {
+        // list of indices to remove is sorted and distinct
+        debug_assert!(to_remove.windows(2).all(|w| w[0] < w[1]));
+        let mut candidate = Vec::with_capacity(set.len() - to_remove.len());
+        let mut to_remove = to_remove.iter().peekable();
+        for (i, t) in set.iter().enumerate() {
+            if to_remove.peek().map_or(false, |r| **r == i) {
+                to_remove.next();
+            } else {
+                candidate.push(t.clone())
+            }
+        }
+        candidate
+    };
+
+    let indices = (0..set.len()).collect();
+    let to_remove = minimize(indices, |candidate| oracle(&build_set(candidate)));
+    build_set(&to_remove)
 }
 
 #[cfg(test)]
@@ -59,65 +109,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test1() {
-        // doesn't contain 0
-        let oracle = |xs: &[&i32]| !xs.contains(&&0);
-
-        let config: Vec<i32> = vec![0, 1, 2, 3, 4];
-        let config: Vec<&i32> = config.iter().collect();
-
-        let min = dd(config.as_slice(), oracle);
-        assert!(min.len() == 1);
-        assert!(min.contains(&&0));
-
-        let config: Vec<i32> = vec![0, 0, 0, 0, 0];
-        let config: Vec<&i32> = config.iter().collect();
-
-        let min = dd(config.as_slice(), oracle);
-        assert!(min.len() == 1);
-        assert!(min.contains(&&0));
+    fn edge_cases() {
+        assert_eq!(minimize(vec![0, 1, 2, 3], |_| true), vec![]);
     }
 
     #[test]
-    fn test2() {
-        // all even
-        let oracle = |xs: &[&i32]| xs.iter().all(|x| **x % 2 == 0);
-
-        let config: Vec<i32> = vec![0, 1, 2, 4, 6, 8, 10, 12, 1, 1, 1];
-        let config: Vec<&i32> = config.iter().collect();
-
-        let min = dd(config.as_slice(), oracle);
-        assert!(min.len() == 1);
-        assert!(min.get(0) == Some(&&1));
+    fn find_the_number() {
+        assert_eq!(minimize(vec![0, 1, 2, 3], |v| v.contains(&0)), vec![0]);
+        assert_eq!(minimize(vec![3, 0, 1, 2], |v| v.contains(&0)), vec![0]);
+        assert_eq!(minimize(vec![2, 3, 0, 1], |v| v.contains(&0)), vec![0]);
+        assert_eq!(minimize(vec![1, 2, 3, 0], |v| v.contains(&0)), vec![0]);
     }
 
     #[test]
-    fn test3() {
-        let oracle = |xs: &[&i32]| !(xs.contains(&&0) && xs.contains(&&1));
-
-        let config: Vec<i32> = vec![0, 1, 2, 4, 6, 8, 10, 12];
-        let config: Vec<&i32> = config.iter().collect();
-
-        let min = dd(config.as_slice(), oracle);
-        assert!(min.len() == 2);
-        assert!(min.contains(&&0));
-        assert!(min.contains(&&1));
-    }
-
-    #[test]
-    fn test4() {
-        let oracle = |xs: &[&i32]| {
-            let mut sum = 0;
-            for x in xs {
-                sum += **x;
-            }
-            sum == 0
-        };
-
-        let config: Vec<i32> = vec![-1, -2, 3];
-        let config: Vec<&i32> = config.iter().collect();
-
-        let min = dd(config.as_slice(), oracle);
-        assert!(min.len() == 1);
+    #[rustfmt::skip]
+    fn keep_the_number() {
+        assert_eq!(maximize(vec![0, 1, 2, 3], |v| !v.contains(&0)), vec![1, 2, 3]);
+        assert_eq!(maximize(vec![3, 0, 1, 2], |v| !v.contains(&0)), vec![3, 1, 2]);
+        assert_eq!(maximize(vec![2, 3, 0, 1], |v| !v.contains(&0)), vec![2, 3, 1]);
+        assert_eq!(maximize(vec![1, 2, 3, 0], |v| !v.contains(&0)), vec![1, 2, 3]);
     }
 }
